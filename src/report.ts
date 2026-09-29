@@ -20,7 +20,7 @@ export interface MonthlyReport {
   categories: CategoryTotal[];
 }
 
-const MONTH_PATTERN = /^\d{4}-\d{2}$/;
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
@@ -38,7 +38,7 @@ function roundShare(value: number): number {
  */
 export function monthlyReport(transactions: CategorizedTransaction[], month: string): MonthlyReport {
   if (!MONTH_PATTERN.test(month)) {
-    throw new Error(`Некорректный формат месяца: "${month}". Ожидается YYYY-MM.`);
+    throw new Error(`Некорректный формат месяца: "${month}". Ожидается YYYY-MM с месяцем от 01 до 12.`);
   }
 
   const inMonth = transactions.filter((transaction) => transaction.date.startsWith(month));

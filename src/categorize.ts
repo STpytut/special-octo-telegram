@@ -4,7 +4,7 @@ import type { Transaction } from "./ledger.js";
 export interface CategoryMatch {
   /** Case-insensitive substring match: matches if the description contains any of these. */
   descriptionContains?: string[];
-  /** Regular expression (as a string, case-insensitive) tested against the description. */
+  /** Regular expression (as a string, case-sensitive) tested against the description. */
   descriptionRegex?: string;
   /** Inclusive lower bound on the signed transaction amount, in rubles. */
   amountMin?: number;
@@ -40,7 +40,7 @@ function matchesRule(rule: CategoryRule, transaction: Transaction): boolean {
   }
 
   if (match.descriptionRegex !== undefined) {
-    const regex = new RegExp(match.descriptionRegex, "i");
+    const regex = new RegExp(match.descriptionRegex);
     if (!regex.test(transaction.description)) {
       return false;
     }

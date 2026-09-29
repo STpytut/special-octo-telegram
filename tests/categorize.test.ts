@@ -54,6 +54,15 @@ describe("categorize", () => {
     expect(results[1]?.category).toBe("Связь");
   });
 
+  it("applies descriptionRegex case-sensitively, unlike descriptionContains", () => {
+    const rules: CategoryRule[] = [{ category: "Связь", match: { descriptionRegex: "^МТС" } }];
+
+    const results = categorize([tx({ description: "МТС оплата" }), tx({ description: "мтс оплата" })], rules);
+
+    expect(results[0]?.category).toBe("Связь");
+    expect(results[1]?.category).toBe(UNCATEGORIZED);
+  });
+
   it("applies inclusive amountMin/amountMax bounds against the signed amount", () => {
     const rules: CategoryRule[] = [{ category: "Крупные покупки", match: { amountMin: -5000, amountMax: -1000 } }];
 
@@ -70,12 +79,12 @@ describe("categorize", () => {
     ]);
   });
 
-  it("excludes income when amountMin is 0 (the signed-amount example from the user's request)", () => {
-    const rules: CategoryRule[] = [{ category: "Расходы", match: { amountMin: 0 } }];
+  it("matches only income (Зарплата) and excludes expenses when amountMin is 0 (the signed-amount example from the user's request)", () => {
+    const rules: CategoryRule[] = [{ category: "Доход", match: { amountMin: 0 } }];
 
     const results = categorize([tx({ amount: 5000, description: "Зарплата" }), tx({ amount: -100 })], rules);
 
-    expect(results[0]?.category).toBe("Расходы");
+    expect(results[0]?.category).toBe("Доход");
     expect(results[1]?.category).toBe(UNCATEGORIZED);
   });
 

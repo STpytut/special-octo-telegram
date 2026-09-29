@@ -112,6 +112,15 @@ describe("monthlyReport", () => {
     expect(() => monthlyReport([], "2024/01")).toThrowError(/YYYY-MM/);
   });
 
+  it("rejects a month with an out-of-range month number", () => {
+    expect(() => monthlyReport([], "2024-13")).toThrowError(/YYYY-MM/);
+  });
+
+  it("accepts the boundary months 01 and 12", () => {
+    expect(() => monthlyReport([], "2024-01")).not.toThrow();
+    expect(() => monthlyReport([], "2024-12")).not.toThrow();
+  });
+
   it("returns an empty category list and zero totals when there are no matching transactions", () => {
     const report = monthlyReport([tx({ date: "2024-02-01" })], "2024-01");
 
