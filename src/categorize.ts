@@ -1,16 +1,21 @@
 import type { Transaction } from "./ledger.js";
 
-/** A single categorization rule: matches when all present conditions hold. */
-export interface CategoryRule {
-  category: string;
+/** Match conditions for a category rule. All present conditions are combined with AND. */
+export interface CategoryMatch {
   /** Case-insensitive substring match: matches if the description contains any of these. */
   descriptionContains?: string[];
-  /** Regular expression (as a string) tested against the description. */
+  /** Regular expression (as a string, case-insensitive) tested against the description. */
   descriptionRegex?: string;
-  /** Inclusive lower bound on the amount in rubles (absolute value, see [[toRubAbs]]). */
+  /** Inclusive lower bound on the signed transaction amount, in rubles. */
   amountMin?: number;
-  /** Inclusive upper bound on the amount in rubles (absolute value). */
+  /** Inclusive upper bound on the signed transaction amount, in rubles. */
   amountMax?: number;
+}
+
+/** A single categorization rule: matches when all conditions in `match` hold. */
+export interface CategoryRule {
+  category: string;
+  match: CategoryMatch;
 }
 
 /** A transaction annotated with the category assigned by [[categorize]]. */
@@ -20,31 +25,33 @@ export interface CategorizedTransaction extends Transaction {
 
 export const UNCATEGORIZED = "Без категории";
 
+const MATCH_KEYS = ["descriptionContains", "descriptionRegex", "amountMin", "amountMax"] as const;
+const RULE_KEYS = ["category", "match"] as const;
+
 function matchesRule(rule: CategoryRule, transaction: Transaction): boolean {
+  const { match } = rule;
   const description = transaction.description.toLowerCase();
 
-  if (rule.descriptionContains && rule.descriptionContains.length > 0) {
-    const matchesAny = rule.descriptionContains.some((needle) => description.includes(needle.toLowerCase()));
+  if (match.descriptionContains && match.descriptionContains.length > 0) {
+    const matchesAny = match.descriptionContains.some((needle) => description.includes(needle.toLowerCase()));
     if (!matchesAny) {
       return false;
     }
   }
 
-  if (rule.descriptionRegex !== undefined) {
-    const regex = new RegExp(rule.descriptionRegex, "i");
+  if (match.descriptionRegex !== undefined) {
+    const regex = new RegExp(match.descriptionRegex, "i");
     if (!regex.test(transaction.description)) {
       return false;
     }
   }
 
-  if (rule.amountMin !== undefined || rule.amountMax !== undefined) {
-    const amount = Math.abs(transaction.amount);
-    if (rule.amountMin !== undefined && amount < rule.amountMin) {
-      return false;
-    }
-    if (rule.amountMax !== undefined && amount > rule.amountMax) {
-      return false;
-    }
+  if (match.amountMin !== undefined && transaction.amount < match.amountMin) {
+    return false;
+  }
+
+  if (match.amountMax !== undefined && transaction.amount > match.amountMax) {
+    return false;
   }
 
   return true;
@@ -61,13 +68,85 @@ export function categorize(transactions: Transaction[], rules: CategoryRule[]): 
   });
 }
 
+/**
+ * Best-effort mapping from a character offset in the source JSON to the
+ * 1-based index of the top-level array element containing it. Used to give
+ * syntactically broken rules.json files a plausible rule number.
+ */
+function findRuleNumberForPosition(content: string, position: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let ruleIndex = 1;
+
+  const end = Math.min(position, content.length);
+  for (let i = 0; i < end; i++) {
+    const ch = content[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{" || ch === "[") {
+      depth++;
+    } else if (ch === "}" || ch === "]") {
+      depth--;
+    } else if (ch === "," && depth === 1) {
+      ruleIndex++;
+    }
+  }
+
+  return ruleIndex;
+}
+
+/**
+ * Best-effort recovery of a character offset from a JSON.parse error message
+ * that does not report an explicit position (as used by newer V8 engines,
+ * which instead include a short excerpt of the source around the error).
+ */
+function estimateErrorPosition(content: string, message: string): number | undefined {
+  const tokenMatch = /Unexpected token '(.)'/.exec(message);
+  const excerptMatch = /\.\.\.(.*)\.\.\./s.exec(message);
+  if (!tokenMatch || !excerptMatch) {
+    return undefined;
+  }
+
+  const excerpt = excerptMatch[1];
+  const excerptStart = content.indexOf(excerpt);
+  if (excerptStart === -1) {
+    return undefined;
+  }
+
+  const tokenOffset = excerpt.indexOf(tokenMatch[1]);
+  if (tokenOffset === -1) {
+    return undefined;
+  }
+
+  return excerptStart + tokenOffset;
+}
+
 /** Parses and validates the contents of a rules.json file into a rule list. */
 export function parseRules(content: string): CategoryRule[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
   } catch (error) {
-    throw new Error(`Некорректный JSON в файле правил: ${(error as Error).message}`);
+    const message = (error as Error).message;
+    const positionMatch = /position (\d+)/.exec(message);
+    const position = positionMatch
+      ? Number(positionMatch[1])
+      : (estimateErrorPosition(content, message) ?? content.length);
+    const ruleNumber = findRuleNumberForPosition(content, position);
+    throw new Error(`Правило ${ruleNumber}: файл правил содержит некорректный JSON: ${message}`);
   }
 
   if (!Array.isArray(parsed)) {
@@ -86,66 +165,81 @@ function validateRule(raw: unknown, ruleNumber: number): CategoryRule {
 
   const record = raw as Record<string, unknown>;
 
+  for (const key of Object.keys(record)) {
+    if (!(RULE_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`${prefix} неизвестное поле "${key}". Допустимы: ${RULE_KEYS.join(", ")}.`);
+    }
+  }
+
   if (typeof record.category !== "string" || record.category.trim() === "") {
     throw new Error(`${prefix} поле "category" обязательно и должно быть непустой строкой.`);
   }
 
-  const rule: CategoryRule = { category: record.category };
-
-  if (record.descriptionContains !== undefined) {
-    if (
-      !Array.isArray(record.descriptionContains) ||
-      record.descriptionContains.length === 0 ||
-      !record.descriptionContains.every((item) => typeof item === "string" && item !== "")
-    ) {
-      throw new Error(`${prefix} поле "descriptionContains" должно быть непустым массивом непустых строк.`);
-    }
-    rule.descriptionContains = record.descriptionContains as string[];
+  if (typeof record.match !== "object" || record.match === null || Array.isArray(record.match)) {
+    throw new Error(`${prefix} поле "match" обязательно и должно быть объектом.`);
   }
 
-  if (record.descriptionRegex !== undefined) {
-    if (typeof record.descriptionRegex !== "string" || record.descriptionRegex === "") {
-      throw new Error(`${prefix} поле "descriptionRegex" должно быть непустой строкой.`);
+  const matchRecord = record.match as Record<string, unknown>;
+  for (const key of Object.keys(matchRecord)) {
+    if (!(MATCH_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`${prefix} неизвестное условие "${key}" в "match". Допустимы: ${MATCH_KEYS.join(", ")}.`);
+    }
+  }
+
+  const match: CategoryMatch = {};
+
+  if (matchRecord.descriptionContains !== undefined) {
+    if (
+      !Array.isArray(matchRecord.descriptionContains) ||
+      matchRecord.descriptionContains.length === 0 ||
+      !matchRecord.descriptionContains.every((item) => typeof item === "string" && item !== "")
+    ) {
+      throw new Error(`${prefix} поле "match.descriptionContains" должно быть непустым массивом непустых строк.`);
+    }
+    match.descriptionContains = matchRecord.descriptionContains as string[];
+  }
+
+  if (matchRecord.descriptionRegex !== undefined) {
+    if (typeof matchRecord.descriptionRegex !== "string" || matchRecord.descriptionRegex === "") {
+      throw new Error(`${prefix} поле "match.descriptionRegex" должно быть непустой строкой.`);
     }
     try {
       // eslint-disable-next-line no-new
-      new RegExp(record.descriptionRegex);
+      new RegExp(matchRecord.descriptionRegex);
     } catch (error) {
-      throw new Error(`${prefix} некорректное регулярное выражение "descriptionRegex": ${(error as Error).message}`);
+      throw new Error(
+        `${prefix} некорректное регулярное выражение "match.descriptionRegex": ${(error as Error).message}`,
+      );
     }
-    rule.descriptionRegex = record.descriptionRegex;
+    match.descriptionRegex = matchRecord.descriptionRegex;
   }
 
-  if (record.amountMin !== undefined) {
-    if (typeof record.amountMin !== "number" || !Number.isFinite(record.amountMin) || record.amountMin < 0) {
-      throw new Error(`${prefix} поле "amountMin" должно быть неотрицательным числом.`);
+  if (matchRecord.amountMin !== undefined) {
+    if (typeof matchRecord.amountMin !== "number" || !Number.isFinite(matchRecord.amountMin)) {
+      throw new Error(`${prefix} поле "match.amountMin" должно быть числом.`);
     }
-    rule.amountMin = record.amountMin;
+    match.amountMin = matchRecord.amountMin;
   }
 
-  if (record.amountMax !== undefined) {
-    if (typeof record.amountMax !== "number" || !Number.isFinite(record.amountMax) || record.amountMax < 0) {
-      throw new Error(`${prefix} поле "amountMax" должно быть неотрицательным числом.`);
+  if (matchRecord.amountMax !== undefined) {
+    if (typeof matchRecord.amountMax !== "number" || !Number.isFinite(matchRecord.amountMax)) {
+      throw new Error(`${prefix} поле "match.amountMax" должно быть числом.`);
     }
-    rule.amountMax = record.amountMax;
+    match.amountMax = matchRecord.amountMax;
+  }
+
+  if (match.amountMin !== undefined && match.amountMax !== undefined && match.amountMin > match.amountMax) {
+    throw new Error(`${prefix} "match.amountMin" не может быть больше "match.amountMax".`);
   }
 
   if (
-    rule.amountMin !== undefined &&
-    rule.amountMax !== undefined &&
-    rule.amountMin > rule.amountMax
+    match.descriptionContains === undefined &&
+    match.descriptionRegex === undefined &&
+    match.amountMin === undefined &&
+    match.amountMax === undefined
   ) {
-    throw new Error(`${prefix} "amountMin" не может быть больше "amountMax".`);
+    throw new Error(`${prefix} в "match" должно быть указано хотя бы одно условие.`);
   }
 
-  if (
-    rule.descriptionContains === undefined &&
-    rule.descriptionRegex === undefined &&
-    rule.amountMin === undefined &&
-    rule.amountMax === undefined
-  ) {
-    throw new Error(`${prefix} должно быть указано хотя бы одно условие.`);
-  }
-
-  return rule;
+  return { category: record.category, match };
 }

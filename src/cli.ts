@@ -93,7 +93,12 @@ interface ReportArgs {
   json: boolean;
 }
 
-const MONTH_PATTERN = /^\d{4}-\d{2}$/;
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+const USAGE = "Использование: pocket-ledger report <file.csv> [--month YYYY-MM] [--rules path] [--json]";
+
+function isFlag(token: string | undefined): boolean {
+  return token !== undefined && token.startsWith("--");
+}
 
 function parseReportArgs(args: string[]): ReportArgs | { error: string } {
   const result: ReportArgs = { json: false };
@@ -102,17 +107,19 @@ function parseReportArgs(args: string[]): ReportArgs | { error: string } {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--month") {
-      const value = args[++i];
-      if (!value) {
+      const value = args[i + 1];
+      if (!value || isFlag(value)) {
         return { error: "Опция --month требует значения в формате YYYY-MM." };
       }
       result.month = value;
+      i++;
     } else if (arg === "--rules") {
-      const value = args[++i];
-      if (!value) {
+      const value = args[i + 1];
+      if (!value || isFlag(value)) {
         return { error: "Опция --rules требует пути к файлу." };
       }
       result.rulesPath = value;
+      i++;
     } else if (arg === "--json") {
       result.json = true;
     } else if (arg.startsWith("--")) {
@@ -123,13 +130,17 @@ function parseReportArgs(args: string[]): ReportArgs | { error: string } {
   }
 
   if (positional.length === 0) {
-    return { error: "Не указан путь к CSV-файлу.\nИспользование: pocket-ledger report <file.csv> [--month YYYY-MM] [--rules path] [--json]" };
+    return { error: `Не указан путь к CSV-файлу.\n${USAGE}` };
+  }
+
+  if (positional.length > 1) {
+    return { error: `Лишние аргументы: ${positional.slice(1).join(" ")}\n${USAGE}` };
   }
 
   result.filePath = positional[0];
 
   if (result.month !== undefined && !MONTH_PATTERN.test(result.month)) {
-    return { error: `Некорректный формат месяца: "${result.month}". Ожидается YYYY-MM.` };
+    return { error: `Некорректный формат месяца: "${result.month}". Ожидается YYYY-MM с месяцем от 01 до 12.` };
   }
 
   return result;
@@ -155,10 +166,11 @@ function padStart(value: string, width: number): string {
 }
 
 function formatReportTable(report: MonthlyReport): string {
-  const headers = ["Категория", "Сумма", "Доля", "Кол-во"];
+  const headers = ["Категория", "Расход", "Доход", "Доля", "Кол-во"];
   const rows = report.categories.map((category) => [
     category.category,
-    formatAmount(category.amount),
+    formatAmount(category.expense),
+    formatAmount(category.income),
     `${category.share.toFixed(1)}%`,
     String(category.count),
   ]);

@@ -23,7 +23,7 @@ describe("monthlyReport", () => {
     const report = monthlyReport(transactions, "2024-01");
 
     expect(report.expense).toBe(100);
-    expect(report.categories).toEqual([{ category: "Еда", amount: 100, count: 1, share: 100 }]);
+    expect(report.categories).toEqual([{ category: "Еда", expense: 100, income: 0, count: 1, share: 100 }]);
   });
 
   it("excludes transactions from neighboring months", () => {
@@ -38,7 +38,7 @@ describe("monthlyReport", () => {
     expect(report.expense).toBe(50);
   });
 
-  it("aggregates expenses as positive amounts and income separately", () => {
+  it("aggregates expenses as positive amounts and income separately at the report level", () => {
     const transactions = [
       tx({ amount: 1000, category: "Доход" }),
       tx({ amount: -300, category: "Еда" }),
@@ -48,20 +48,29 @@ describe("monthlyReport", () => {
 
     expect(report.income).toBe(1000);
     expect(report.expense).toBe(300);
-    expect(report.categories).toEqual([{ category: "Еда", amount: 300, count: 1, share: 100 }]);
   });
 
-  it("counts transactions per category", () => {
+  it("includes a category with only income, with expense 0 and share 0", () => {
+    const transactions = [tx({ amount: 1000, category: "Доход" }), tx({ amount: -300, category: "Еда" })];
+
+    const report = monthlyReport(transactions, "2024-01");
+
+    const income = report.categories.find((c) => c.category === "Доход");
+    expect(income).toEqual({ category: "Доход", expense: 0, income: 1000, count: 1, share: 0 });
+  });
+
+  it("counts all transactions per category regardless of income/expense", () => {
     const transactions = [
       tx({ amount: -100, category: "Еда" }),
       tx({ amount: -50, category: "Еда" }),
+      tx({ amount: 200, category: "Еда" }),
       tx({ amount: -25, category: "Транспорт" }),
     ];
 
     const report = monthlyReport(transactions, "2024-01");
 
     const food = report.categories.find((c) => c.category === "Еда");
-    expect(food).toEqual({ category: "Еда", amount: 150, count: 2, share: 85.7 });
+    expect(food).toEqual({ category: "Еда", expense: 150, income: 200, count: 3, share: 85.7 });
   });
 
   it("sorts categories by expense amount descending", () => {

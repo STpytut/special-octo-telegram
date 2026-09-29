@@ -134,8 +134,8 @@ describe("runCli report", () => {
     writeFileSync(
       path,
       JSON.stringify([
-        { category: "Еда", descriptionContains: ["пятёрочка"] },
-        { category: "Транспорт", descriptionContains: ["такси"] },
+        { category: "Еда", match: { descriptionContains: ["пятёрочка"] } },
+        { category: "Транспорт", match: { descriptionContains: ["такси"] } },
       ]),
       "utf-8",
     );
@@ -155,6 +155,7 @@ describe("runCli report", () => {
     expect(result.output).toContain("250.50");
     expect(result.output).toContain("Транспорт");
     expect(result.output).toContain("Без категории");
+    expect(result.output).toMatch(/Категория\s+Расход\s+Доход\s+Доля\s+Кол-во/);
   });
 
   it("uses --rules to override the default rules.json path", () => {
@@ -233,6 +234,64 @@ describe("runCli report", () => {
     expect(result.stderr).toContain("JSON");
   });
 
+  it("exits with 2 and a rule number when rules.json has an unknown key inside match", () => {
+    const file = writeStatement();
+    writeFileSync(
+      join(dir, "rules.json"),
+      JSON.stringify([{ category: "Еда", match: { desc: "кафе" } }]),
+      "utf-8",
+    );
+
+    const result = runCli(["report", file, "--month", "2024-01"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Правило 1:");
+    expect(result.stderr).toContain("desc");
+  });
+
+  it("exits with 2 and a rule number when rules.json has a broken regex", () => {
+    const file = writeStatement();
+    writeFileSync(
+      join(dir, "rules.json"),
+      JSON.stringify([{ category: "Еда", match: { descriptionRegex: "(unterminated" } }]),
+      "utf-8",
+    );
+
+    const result = runCli(["report", file, "--month", "2024-01"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Правило 1:");
+  });
+
+  it("exits with 2 and a rule number when rules.json has an empty category", () => {
+    const file = writeStatement();
+    writeFileSync(
+      join(dir, "rules.json"),
+      JSON.stringify([{ category: "", match: { descriptionContains: ["кафе"] } }]),
+      "utf-8",
+    );
+
+    const result = runCli(["report", file, "--month", "2024-01"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Правило 1:");
+  });
+
+  it("exits with 2 and a best-effort rule number for syntactically broken rules.json", () => {
+    const file = writeStatement();
+    const broken = JSON.stringify([
+      { category: "Еда", match: { descriptionContains: ["кафе"] } },
+      { category: "Транспорт", match: { descriptionContains: ["такси"] } },
+    ]).replace('"Транспорт"', "Транспорт");
+    writeFileSync(join(dir, "rules.json"), broken, "utf-8");
+
+    const result = runCli(["report", file, "--month", "2024-01"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Правило 2:");
+    expect(result.stderr).toContain("JSON");
+  });
+
   it("exits with 2 for an invalid --month argument", () => {
     const file = writeStatement();
     writeRules(join(dir, "rules.json"));
@@ -243,11 +302,41 @@ describe("runCli report", () => {
     expect(result.stderr).toContain("YYYY-MM");
   });
 
+  it("exits with 2 for a month with an out-of-range month number", () => {
+    const file = writeStatement();
+    writeRules(join(dir, "rules.json"));
+
+    const result = runCli(["report", file, "--month", "2024-13"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("YYYY-MM");
+  });
+
   it("exits with 2 when the CSV file path is missing", () => {
     const result = runCli(["report"]);
 
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("Не указан путь");
+  });
+
+  it("exits with 2 when extra positional arguments are given", () => {
+    const file = writeStatement();
+    writeRules(join(dir, "rules.json"));
+
+    const result = runCli(["report", file, "extra-arg"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Лишние аргументы");
+  });
+
+  it("exits with 2 when --month is immediately followed by another flag", () => {
+    const file = writeStatement();
+    writeRules(join(dir, "rules.json"));
+
+    const result = runCli(["report", file, "--month", "--json"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("--month");
   });
 
   it("prints the report as JSON with --json", () => {
@@ -263,7 +352,8 @@ describe("runCli report", () => {
     expect(parsed.expense).toBe(400.5);
     expect(parsed.categories.find((c: { category: string }) => c.category === "Еда")).toEqual({
       category: "Еда",
-      amount: 250.5,
+      expense: 250.5,
+      income: 0,
       count: 1,
       share: 62.5,
     });
