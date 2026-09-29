@@ -48,6 +48,11 @@ function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/** Formats a monetary amount with exactly two decimal places, e.g. "1234.50". */
+export function formatAmount(value: number): string {
+  return value.toFixed(2);
+}
+
 /** Computes total income, expense and balance for a list of transactions. */
 export function summarize(transactions: Transaction[]): Summary {
   let income = 0;
